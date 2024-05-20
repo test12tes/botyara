@@ -1,0 +1,2 @@
+[bot] 
+hostname ansible_host=192.168.1.64 ansible_user=ansible ansible_password=12345

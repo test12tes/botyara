@@ -1,0 +1,193 @@
+---
+- name: Развертка Telegram Bot и настройка репликаци
+  hosts: bot
+  become: yes
+
+  tasks:
+    - name: Обновить пакеты apt
+      apt:
+        upgrade: yes
+
+    - name: Софтварь
+      apt:
+        name: software-properties-common
+        state: present
+
+    - name: пакетики
+      apt:
+        name:
+          - ssh
+          - sysstat
+          - wget
+          - build-essential
+          - libreadline-dev
+          - zlib1g-dev
+          - libffi-dev
+          - flex
+          - bison
+          - tcl
+          - libssl-dev
+          - libxml2-dev
+          - libxslt-dev
+          - libcurl4-openssl-dev
+          - libicu-dev
+          - git
+          - postgresql
+          - postgresql-contrib
+          - jq
+          - libpq-dev
+        state: present  
+    - name: Удалить каталог '/root/.pyenv', если он существует
+      become: yes
+      command: rm -rf /root/.pyenv
+      ignore_errors: yes
+
+    - name: Установить pyenv
+      become: yes
+      shell: curl https://pyenv.run | bash
+
+    - name: Добавить pyenv в переменные среды
+      become: yes
+      lineinfile:
+        dest: ~/.bashrc
+        line: "{{ item }}"
+      with_items:
+        - 'export PATH="$HOME/.pyenv/bin:$PATH"'
+        - 'eval "$(pyenv init --path)"'
+
+    - name: Установить Python 3.9
+      become: yes
+      shell: |
+        $HOME/.pyenv/bin/pyenv install 3.9.0
+
+    - name: Создать виртуальное окружение Python 3.9
+      become: yes
+      shell: |
+        $HOME/.pyenv/bin/pyenv virtualenv 3.9.0 myenv
+        $HOME/.pyenv/bin/pyenv global myenv
+
+    - name: Ensure pip for Python 3.7 is up to date
+      pip:
+        name: pip
+        executable: /usr/bin/pip3
+
+    - name: pip3 env
+      pip:
+        name: virtualenv
+        executable: /usr/bin/pip3    
+
+    - name: psycopg
+      pip:
+        name: psycopg2-binary
+        executable: /usr/bin/pip3    
+
+    - name: проверка postgr
+      service:
+        name: postgresql
+        state: started
+        enabled: true
+
+    - name: база создать
+      become: yes
+      become_user: postgres
+      postgresql_db:
+        name: "{{ DB_DATABASE }}"
+        owner: "{{ DB_USER }}"
+        login_user: "{{ DB_USER }}"
+        login_password: "{{ DB_PASSWORD }}"
+    - name: create tables
+      become_user: postgres
+      postgresql_query:
+        db: "{{ DB_DATABASE }}"
+        login_user: "{{ DB_USER }}"
+        login_password: "{{ DB_PASSWORD }}"
+        query: |
+          CREATE TABLE IF NOT EXISTS emails (
+            id SERIAL PRIMARY KEY,
+            email VARCHAR(255)
+          );
+          CREATE TABLE IF NOT EXISTS phone_numbers (
+            id SERIAL PRIMARY KEY,
+            phone_number VARCHAR(255)
+          );
+          CREATE USER {{ DB_REPL_USER }} REPLICATION LOGIN ENCRYPTED PASSWORD '{{ DB_REPL_PASSWORD }}';
+          ALTER ROLE postgres PASSWORD '{{ DB_PASSWORD }}';
+
+    - name: архив
+      file:
+        owner: postgres
+        group: postgres
+        state: directory
+        recurse: yes
+        path: /oracle/pg_data/archive
+
+    - name: Configure postgresql.conf
+      blockinfile:
+        path: /etc/postgresql/14/main/postgresql.conf
+        block: |
+          listen_addresses = '*'
+          port = {{ DB_PORT }}
+          log_destination = 'stderr'
+          logging_collector = on
+          log_directory = '/var/log/postgresql/'
+          log_filename = 'postgresql.log'
+          archive_mode = on
+          archive_command = 'cp %p /oracle/pg_data/archive/%f'
+          max_wal_senders = 10
+          wal_level = replica
+          wal_log_hints = on
+          log_replication_commands = on
+
+    - name: пг конф
+      blockinfile:
+        path: /etc/postgresql/14/main/pg_hba.conf
+        block: |
+          local all {{ DB_USER }} trust
+          host all all 0.0.0.0/0 password
+          host replication {{ DB_REPL_USER }} {{ DB_REPL_HOST }}/24 scram-sha-256
+
+    - name: рестар постгрес
+      service:
+        name: postgresql
+        state: restarted
+
+    - name: ссш
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        state: present
+        regexp: '^#?PermitRootLogin prohibit-password'
+        line: 'PermitRootLogin yes'
+
+    - name: рестарт ссш
+      service:
+        name: ssh
+        state: restarted
+
+    - name: клоним
+      git:
+        repo: 'https://github.com/test12tes/botyara.git'
+        dest: /home/ubuntu/Desktop/bot
+
+    - name: права директории
+      file:
+        path: /home/ubuntu/Desktop/bot
+        mode: '0777'
+        state: directory
+
+    - name: енв копия
+      template:
+        src: .env
+        dest: /home/ubuntu/Desktop/bot/.env
+        mode: '0777'
+
+
+
+    - name: питон отладка
+      pip:
+        requirements: /home/ubuntu/Desktop/bot/bot/requirements.txt
+        virtualenv: /home/ubuntu/Desktop/bot/venv
+
+    - name: запуск бота
+      shell: |
+        . /home/ubuntu/Desktop/bot/venv/bin/activate &&
+        python /home/ubuntu/Desktop/bot/bot/bot.py
